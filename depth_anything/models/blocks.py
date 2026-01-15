@@ -104,6 +104,11 @@ class FeatureFusionBlock(nn.Module):
 
         # 如果有跳跃连接，先融合
         if skip is not None:
+            # 确保 skip 与 output 尺寸一致
+            if skip.shape[-2:] != output.shape[-2:]:
+                skip = nn.functional.interpolate(
+                    skip, size=output.shape[-2:], mode='bilinear', align_corners=self.align_corners
+                )
             output = output + self.resConfUnit1(skip)
 
         output = self.resConfUnit2(output)

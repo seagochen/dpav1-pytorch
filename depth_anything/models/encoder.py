@@ -61,6 +61,14 @@ class DINOv2Encoder(nn.Module):
         # for param in self.backbone.parameters():
         #     param.requires_grad = False
 
+        # 添加投影层将所有特征投影到目标通道数
+        # DINOv2 所有层输出相同的通道数 (features)
+        # 但我们需要不同的通道数用于解码器
+        self.projections = nn.ModuleList([
+            nn.Conv2d(self.config['features'], out_ch, kernel_size=1, stride=1, padding=0)
+            for out_ch in self.config['out_channels']
+        ])
+
     @property
     def features(self) -> int:
         """返回特征维度"""
@@ -84,7 +92,7 @@ class DINOv2Encoder(nn.Module):
             x: 输入图像 [B, 3, H, W]
 
         Returns:
-            4个不同层级的特征列表
+            4个不同层级的特征列表，每个特征的通道数对应 out_channels 中的值
         """
         # 获取 patch embedding 后的尺寸
         h, w = x.shape[-2] // 14, x.shape[-1] // 14
@@ -96,7 +104,12 @@ class DINOv2Encoder(nn.Module):
             reshape=True  # 自动 reshape 为 [B, C, H, W]
         )
 
-        return list(features)
+        # 应用投影层将所有特征映射到目标通道数
+        projected_features = [
+            proj(feat) for proj, feat in zip(self.projections, features)
+        ]
+
+        return projected_features
 
 
 def build_encoder(encoder_name: str = 'vitb') -> DINOv2Encoder:

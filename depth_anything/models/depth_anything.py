@@ -52,7 +52,7 @@ class DepthAnything(nn.Module, PyTorchModelHubMixin):
         depth = model.predict(image)
     """
 
-    def __init__(self, encoder: str = 'vitb', features: int = 256,
+    def __init__(self, encoder: str = 'vitb', features: int = 128,
                  use_bn: bool = False, **kwargs):
         """
         Args:
@@ -169,7 +169,19 @@ class DepthAnything(nn.Module, PyTorchModelHubMixin):
 
             # 加载权重
             state_dict = torch.load(weights_path, map_location='cpu')
-            model.load_state_dict(state_dict, strict=False)
+
+            # 转换权重 key 以匹配模型结构
+            new_state_dict = cls._convert_state_dict(state_dict)
+
+            # 加载转换后的权重
+            missing, unexpected = model.load_state_dict(new_state_dict, strict=False)
+
+            # 过滤掉预期不匹配的 key (DINOv2 backbone 已由 torch.hub 加载)
+            missing = [k for k in missing if not k.startswith('encoder.backbone.')]
+
+            if missing:
+                print(f"警告: 以下权重未加载: {missing}")
+
             print(f"成功加载预训练权重: {repo_id}")
 
         except Exception as e:
@@ -177,6 +189,71 @@ class DepthAnything(nn.Module, PyTorchModelHubMixin):
             print("模型将使用随机初始化的解码器权重")
 
         return model
+
+    @staticmethod
+    def _convert_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """
+        转换预训练权重的 key 以匹配模型结构
+
+        预训练权重结构:
+            pretrained.* -> DINOv2 backbone (跳过，使用 torch.hub 加载的)
+            depth_head.projects.* -> encoder.projections.* (768 -> [96,192,384,768])
+            depth_head.resize_layers.* -> decoder.resize_layers.*
+            depth_head.scratch.layer{i}_rn -> decoder.projects.{i-1} (3x3 conv -> 128)
+            depth_head.scratch.refinenet{i} -> decoder.fusion_blocks.{i-1}
+            depth_head.scratch.output_conv1/2 -> decoder.head.*
+        """
+        new_state_dict = {}
+
+        for key, value in state_dict.items():
+            new_key = None
+
+            # 跳过 DINOv2 backbone 权重 (已由 torch.hub 加载)
+            if key.startswith('pretrained.'):
+                continue
+
+            # 编码器投影层: depth_head.projects.* -> encoder.projections.*
+            if key.startswith('depth_head.projects.'):
+                new_key = key.replace('depth_head.projects.', 'encoder.projections.')
+
+            # 解码器调整层: depth_head.resize_layers.* -> decoder.resize_layers.*
+            elif key.startswith('depth_head.resize_layers.'):
+                new_key = key.replace('depth_head.resize_layers.', 'decoder.resize_layers.')
+
+            # 解码器投影层: depth_head.scratch.layer{i}_rn -> decoder.projects.{i-1}
+            # 注意: layer_rn 只有 weight，没有 bias
+            elif key.startswith('depth_head.scratch.layer') and '_rn' in key:
+                # layer1_rn.weight -> projects.0.weight
+                layer_num = int(key.split('.')[2].replace('layer', '').replace('_rn', ''))
+                new_key = f'decoder.projects.{layer_num - 1}.weight'
+
+            # 融合块: depth_head.scratch.refinenet{i} -> decoder.fusion_blocks.{i-1}
+            elif key.startswith('depth_head.scratch.refinenet'):
+                # refinenet1 -> fusion_blocks.0, etc.
+                parts = key.split('.')
+                refinenet_num = int(parts[2].replace('refinenet', ''))
+                rest = '.'.join(parts[3:])
+                new_key = f'decoder.fusion_blocks.{refinenet_num - 1}.{rest}'
+
+            # 输出头: depth_head.scratch.output_conv1/2 -> decoder.head.*
+            elif key.startswith('depth_head.scratch.output_conv1'):
+                # output_conv1 -> head.0
+                suffix = key.split('output_conv1.')[-1]
+                new_key = f'decoder.head.0.{suffix}'
+
+            elif key.startswith('depth_head.scratch.output_conv2'):
+                # output_conv2.0 -> head.2, output_conv2.2 -> head.4
+                parts = key.split('.')
+                conv_idx = int(parts[3])  # 0 or 2
+                suffix = parts[4]  # weight or bias
+                # output_conv2.0 -> head.2, output_conv2.2 -> head.4
+                head_idx = conv_idx + 2
+                new_key = f'decoder.head.{head_idx}.{suffix}'
+
+            if new_key is not None:
+                new_state_dict[new_key] = value
+
+        return new_state_dict
 
     def get_model_info(self) -> Dict[str, Any]:
         """获取模型信息"""

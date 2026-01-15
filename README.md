@@ -10,6 +10,12 @@ Depth Anything 是一个强大的单目深度估计模型，采用 DINOv2 Vision
 
 本项目对原始代码进行了模块化重构，便于学习和理解模型架构。
 
+## 示例
+
+| 输入图像 | 深度估计结果 |
+|:---:|:---:|
+| ![Input](assets/hamburg.png) | ![Depth](assets/hamburg_depth.png) |
+
 ## 模型架构
 
 ```
